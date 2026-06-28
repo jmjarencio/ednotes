@@ -2,14 +2,18 @@ const express = require('express');
 const path = require('path');
 const app = express();
 
-// Hostinger dynamically assigns process.env.PORT to route traffic
 const PORT = process.env.PORT || 3000;
 
-// Serve the compiled, minified client files from the dist directory
+// Serve public static assets from the 'dist' folder
 app.use(express.static(path.join(__dirname, 'dist')));
 
-// Fallback all routes to index.html to support single-page architecture if needed
+// Handle navigation routes
 app.get('*', (req, res) => {
+    // If the request points to a file (has an extension like .js, .css, .png), 
+    // do not fall back to index.html. Return a proper 404.
+    if (path.extname(req.path)) {
+        return res.status(404).send('Asset Not Found');
+    }
     res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
