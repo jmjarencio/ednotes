@@ -1,5 +1,11 @@
 import { initializeApp } from "firebase/app";
-import { getAuth, onAuthStateChanged } from "firebase/auth";
+import { 
+    getAuth, 
+    onAuthStateChanged, 
+    signInWithCustomToken, 
+    signInWithCredential, 
+    GoogleAuthProvider 
+} from "firebase/auth";
 import { 
     getFirestore, doc, onSnapshot, setDoc, getDoc, increment, 
     collection, getDocs, query, orderBy, limit 
@@ -34,63 +40,119 @@ window.query = query;
 window.orderBy = orderBy;
 window.limit = limit;
 
-// --- Authentication Watcher ---
-onAuthStateChanged(auth, async (user) => {
-    if (user) {
-        document.body.classList.add('authenticated');
-        window.currentUser = user;
+// --- Clean URL Utility ---
+function removeAuthQueryParams() {
+    const cleanUrl = window.location.protocol + "//" + window.location.host + window.location.pathname;
+    window.history.replaceState({ path: cleanUrl }, '', cleanUrl);
+}
 
-        if (user.email === 'jmjarencio@gmail.com' || user.email === 'johnmark.jarencio@deped.gov.ph') {
-            document.getElementById('admin-btn').style.display = 'inline-flex';
+// --- SSO Parameter Parser ---
+// Safely parses and logs the user in if the parent dashboard redirected with credentials
+async function checkSSOToken() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const customToken = urlParams.get('token') || urlParams.get('customToken') || urlParams.get('custom_token');
+    const idToken = urlParams.get('idToken') || urlParams.get('id_token') || urlParams.get('credential');
+
+    if (customToken) {
+        try {
+            await signInWithCustomToken(auth, customToken);
+            removeAuthQueryParams();
+        } catch (err) {
+            console.error("SSO Custom Token authentication failed:", err);
         }
-        
-        const userRef = doc(db, "users_ednotes", user.uid);
+    } else if (idToken) {
+        try {
+            const credential = GoogleAuthProvider.credential(idToken);
+            await signInWithCredential(auth, credential);
+            removeAuthQueryParams();
+        } catch (err) {
+            console.error("SSO ID Token authentication failed:", err);
+        }
+    }
+}
 
-        // DepEd check
-        if (user.email && user.email.toLowerCase().endsWith('@deped.gov.ph')) {
-            try {
-                const userSnap = await getDoc(userRef);
-                if (!userSnap.exists() || !userSnap.data().deped_free_credit_claimed) {
-                    await setDoc(userRef, {
+// --- Initialize App and Authenticate Watcher ---
+async function initApp() {
+    // 1. Process potential cross-subdomain tokens from portal redirect first
+    await checkSSOToken();
+
+    // 2. Bind the user listener
+    onAuthStateChanged(auth, async (user) => {
+        if (user) {
+            document.body.classList.add('authenticated');
+            window.currentUser = user;
+
+            if (user.email === 'jmjarencio@gmail.com' || user.email === 'johnmark.jarencio@deped.gov.ph') {
+                document.getElementById('admin-btn').style.display = 'inline-flex';
+            }
+            
+            const userRef = doc(db, "users_ednotes", user.uid);
+
+            // DepEd check
+            if (user.email && user.email.toLowerCase().endsWith('@deped.gov.ph')) {
+                try {
+                    const userSnap = await getDoc(userRef);
+                    if (!userSnap.exists() || !userSnap.data().deped_free_credit_claimed) {
+                        await setDoc(userRef, {
+                            uid: user.uid,
+                            email: user.email,
+                            displayName: user.displayName,
+                            deped_free_credit_claimed: true,
+                            ednotes_credits: increment(1)
+                        }, { merge: true });
+                        
+                        const dModal = document.getElementById('depedModal');
+                        dModal.style.display = 'flex';
+                        setTimeout(() => dModal.classList.add('active'), 10);
+                    }
+                } catch (err) {
+                    console.error("DepEd verification system error:", err);
+                }
+            }
+            
+            onSnapshot(userRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    const credits = Number(data.ednotes_credits) || 0;
+                    document.getElementById('user-credits').innerText = credits;
+                    window.currentEdNotesCredits = credits;
+                } else {
+                    setDoc(userRef, {
                         uid: user.uid,
                         email: user.email,
                         displayName: user.displayName,
-                        deped_free_credit_claimed: true,
-                        ednotes_credits: increment(1)
+                        lastLogin: new Date().toISOString()
                     }, { merge: true });
                     
-                    const dModal = document.getElementById('depedModal');
-                    dModal.style.display = 'flex';
-                    setTimeout(() => dModal.classList.add('active'), 10);
+                    document.getElementById('user-credits').innerText = 0;
+                    window.currentEdNotesCredits = 0;
                 }
-            } catch (err) {
-                console.error("DepEd verification system error:", err);
+            });
+        } else {
+            // --- LOOP PREVENTION GUARD ---
+            const lastRedirect = sessionStorage.getItem('last_redirect_time');
+            const now = Date.now();
+            
+            // If redirected within the last 6 seconds, we are in a loop. Halt to save resource load.
+            if (lastRedirect && (now - Number(lastRedirect)) < 6000) {
+                console.warn("Redirect loop detected. Stopping automatic redirect.");
+                document.body.classList.add('authenticated');
+                
+                const notice = document.createElement('div');
+                notice.style.cssText = "position:fixed; bottom:20px; right:20px; background:#ef4444; color:white; padding:16px 24px; border-radius:12px; z-index:100000; box-shadow:0 10px 15px rgba(0,0,0,0.1); font-weight:600; font-size:14px;";
+                notice.innerHTML = "Authentication sync issue. Please try logging in again via the main <a href='https://tech2forms.com' style='color:white; text-decoration:underline;'>Edvantage Dashboard</a>.";
+                document.body.appendChild(notice);
+            } else {
+                sessionStorage.setItem('last_redirect_time', now.toString());
+                const returnUrl = encodeURIComponent(window.location.href);
+                window.location.replace("https://tech2forms.com?redirect=" + returnUrl); 
             }
         }
-        
-        onSnapshot(userRef, (docSnap) => {
-            if (docSnap.exists()) {
-                const data = docSnap.data();
-                const credits = Number(data.ednotes_credits) || 0;
-                document.getElementById('user-credits').innerText = credits;
-                window.currentEdNotesCredits = credits;
-            } else {
-                setDoc(userRef, {
-                    uid: user.uid,
-                    email: user.email,
-                    displayName: user.displayName,
-                    lastLogin: new Date().toISOString()
-                }, { merge: true });
-                
-                document.getElementById('user-credits').innerText = 0;
-                window.currentEdNotesCredits = 0;
-            }
-        });
-    } else {
-        const returnUrl = encodeURIComponent(window.location.href);
-        window.location.replace("https://tech2forms.com?redirect=" + returnUrl); 
-    }
-});
+    });
+}
+
+// Start application process
+initApp();
 
 // --- Modal Functions ---
 export function openCreditModal() {
@@ -120,7 +182,7 @@ export function resetModalView() {
     }
 }
 
-// --- Payment Handling with modern QR module ---
+// --- Payment Handling ---
 export async function purchasePlan(planId) {
     if (!window.currentUser) {
         alert("Security Alert: Access restricted. Please log in first.");
@@ -164,7 +226,6 @@ export async function purchasePlan(planId) {
         qrBox.innerHTML = '<canvas id="qr-canvas"></canvas>';
         const canvas = document.getElementById('qr-canvas');
 
-        // Draw compiled QR to canvas using modular bundle
         await QRCode.toCanvas(canvas, data.qr_string, {
             width: 200,
             margin: 1,
@@ -213,7 +274,7 @@ document.getElementById('creditModal').addEventListener('click', function(e) {
     }
 });
 
-// --- API Request Layer with retry logic ---
+// --- API Request Layer ---
 const API_KEY = "sk-74Ra74RZRwlancETv9o16bkovOSGfoHl1zFgcza24oGid9q7";
 const API_URL = "https://api.vectorengine.ai/v1/chat/completions"; 
 const MODEL = "gemini-2.5-pro";
@@ -557,7 +618,6 @@ export async function openAdminModal() {
             tbody.appendChild(tr);
         });
         
-        // Add listeners to dynamically generated inputs
         tbody.querySelectorAll('.save-credit-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 updateUserCredits(e.target.dataset.uid, e.target.dataset.email);
