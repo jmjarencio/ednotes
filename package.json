@@ -1,17 +1,23 @@
 {
-  "name": "ednotes",
+  "name": "ednotes-academic-lecture-generator",
   "version": "1.0.0",
-  "description": "EdNotes - A note-taking application",
+  "private": true,
+  "description": "MATATAG-aligned academic lecture generator.",
   "main": "server.js",
   "scripts": {
-    "dev": "node server.js",
+    "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.18.2"
+    "express": "^4.19.2",
+    "firebase": "^10.7.1",
+    "lottie-web": "^5.12.2",
+    "marked": "^12.0.1",
+    "qrcode": "^1.5.3"
   },
   "devDependencies": {
-    "vite": "^4.0.0"
+    "vite": "^5.2.11"
   }
 }
